@@ -1,0 +1,7 @@
+*~
+node_modules
+.DS_Store
+*bundle.js
+.env
+package-lock.json
+*.pem

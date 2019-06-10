@@ -1,0 +1,26 @@
+{
+  "name": "mediasoup-single-page-sample",
+  "version": "0.1.0",
+  "description": "Mediasoup Sample Code",
+  "main": "server.js",
+  "scripts": {
+    "build": "rollup -c"
+    "build-client-dev": "rollup -c -w"
+    "start": "rollup -c && node server.js"
+  },
+  "author": "Kwindla Hultman Kramer",
+  "license": "ISC",
+  "dependencies": {
+    "deep-equal": "^1.0.1",
+    "express": "^4.16.4",
+    "mediasoup": "^3.1.0",
+    "mediasoup-client": "^3.0.7"
+  },
+  "devDependencies": {
+    "rollup": "^1.12.4",
+    "rollup-plugin-commonjs": "^10.0.0",
+    "rollup-plugin-json": "^4.0.0",
+    "rollup-plugin-node-builtins": "^2.1.2",
+    "rollup-plugin-node-resolve": "^5.0.0"
+  }
+}
