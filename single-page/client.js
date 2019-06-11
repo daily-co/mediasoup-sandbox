@@ -38,17 +38,18 @@ const err = debugModule('demo-app:ERROR');
 //
 //   "inital "no Producer" messages while hooking up stream
 //
-//   if we leave the room and then rejoin, creating a send transport
-//   works, but creating a recv transport show similar behavior to
-//   creating a second consumer without doing the pause/resume trick:
-//   we get a track that hangs on play()
-//
 //   firefox video rotation issue?
 //
 //   use h264 when sending from mobile safari?
 
-export const myPeerId = uuidv4();
 
+//
+// export all the references we use internally to manage call state,
+// to make it easy to tinker from the js console. for example:
+//
+//   `Client.camVideoProducer.paused`
+//
+export const myPeerId = uuidv4();
 export let device,
            joined,
            localCam,
@@ -62,6 +63,10 @@ export let device,
            lastPollSyncData = {},
            consumers = [],
            pollingInterval;
+
+//
+// entry point -- called by document.body.onload
+//
 
 export async function main() {
   try {
@@ -80,13 +85,18 @@ export async function main() {
   window.addEventListener('unload', () => sig('leave', {}, true));
 }
 
+//
+// meeting control actions
+//
 
 export async function joinRoom() {
   if (joined) {
     return;
   }
+
   log('join room');
   $('#join-control').style.display = 'none';
+
   try {
     // signal that we're a new peer and initialize our
     // mediasoup-client device, if this is our first time connecting
@@ -97,7 +107,8 @@ export async function joinRoom() {
     joined = true;
     $('#leave-room').style.display = 'initial';
   } catch (e) {
-    err(e);
+    console.error(e);
+    return;
   }
 
   // super-simple signaling: let's poll at 1-second intervals
@@ -129,7 +140,7 @@ export async function sendCameraStreams() {
   // signaling conversation with the server to set up an outbound rtp
   // stream for the camera video track. our createTransport() function
   // includes logic to tell the server to start the stream in a paused
-  // state, if the checkbox in our UI is unchecked, so as soon as we
+  // state, if the checkbox in our UI is unchecked. so as soon as we
   // have a client-side camVideoProducer object, we need to set it to
   // paused as appropriate, too.
   camVideoProducer = await sendTransport.produce({
@@ -149,6 +160,7 @@ export async function sendCameraStreams() {
   if (getMicPausedState()) {
     camAudioProducer.pause();
   }
+
   $('#stop-streams').style.display = 'initial';
   showCameraInfo();
 }
@@ -205,18 +217,22 @@ export async function startCamera() {
   }
 }
 
+// switch to sending video from the "next" camera device in our device
+// list (if we have multiple cameras)
 export async function cycleCamera() {
   if (!(camVideoProducer && camVideoProducer.track)) {
-    warn("can't cycle camera - no current camera track");
+    warn('cannot cycle camera - no current camera track');
     return;
   }
+
+  log ('cycle camera');
 
   // find "next" device in device list
   let deviceId = await getCurrentDeviceId(),
       allDevices = await navigator.mediaDevices.enumerateDevices(),
       vidDevices = allDevices.filter((d) => d.kind === 'videoinput');
   if (!vidDevices.length > 1) {
-    warn("can't cycle camera - only one camera");
+    warn('cannot cycle camera - only one camera');
     return;
   }
   let idx = vidDevices.findIndex((d) => d.deviceId === deviceId);
@@ -226,14 +242,17 @@ export async function cycleCamera() {
     idx += 1;
   }
 
-  // get a new video stream
-  log('getting a video stream from device', vidDevices[idx].label);
+  // get a new video stream. might as well get a new audio stream too,
+  // just in case browsers want to group audio/video streams together
+  // from the same device when possible (though they don't seem to,
+  // currently)
+  log('getting a video stream from new device', vidDevices[idx].label);
   localCam = await navigator.mediaDevices.getUserMedia({
     video: { deviceId: { exact: vidDevices[idx].deviceId } },
     audio: true
   });
 
-  // replace the track we are sending
+  // replace the tracks we are sending
   await camVideoProducer.replaceTrack({ track: localCam.getVideoTracks()[0] });
   await camAudioProducer.replaceTrack({ track: localCam.getAudioTracks()[0] });
 
@@ -248,7 +267,10 @@ export async function stopStreams() {
   if (!sendTransport) {
     return;
   }
+
   log('stop sending media streams');
+  $('#stop-streams').style.display = 'none';
+
   let { error } = await sig('close-transport',
                             { transportId: sendTransport.id });
   if (error) {
@@ -265,8 +287,8 @@ export async function stopStreams() {
   screenVideoProducer = null;
   localCam = null;
   localScreen = null;
-  // update ui elements for sending streams
-  $('#stop-streams').style.display = 'none';
+
+  // update relevant ui elements
   $('#send-camera').style.display = 'initial';
   $('#share-screen').style.display = 'initial';
   $('#local-screen-pause-ctrl').style.display = 'none';
@@ -277,10 +299,19 @@ export async function leaveRoom() {
   if (!joined) {
     return;
   }
+
   log('leave room');
   $('#leave-room').style.display = 'none';
+
+  // stop polling
   clearInterval(pollingInterval);
-  localCam = null;
+
+  // close everything on the server-side (transports, producers, consumers)
+  let { error } = await sig('leave');
+  if (error) {
+    err(error);
+  }
+
   // closing the transports closes all producers and consumers. we
   // don't need to do anything beyond closing the transports, except
   // to set all our local variables to their initial states
@@ -296,7 +327,7 @@ export async function leaveRoom() {
   lastPollSyncData = {};
   consumers = [];
   joined = false;
-  await sig('leave');
+
   // hacktastically restore ui to initial state
   $('#join-control').style.display = 'initial';
   $('#send-camera').style.display = 'initial';
@@ -305,24 +336,29 @@ export async function leaveRoom() {
   $('#share-screen').style.display = 'initial';
   $('#local-screen-pause-ctrl').style.display = 'none';
   showCameraInfo();
+  updateCamVideoProducerStatsDisplay();
+  updateScreenVideoProducerStatsDisplay();
   updatePeersDisplay();
 }
 
 export async function subscribeToTrack(peerId, mediaTag) {
-  // todo: why do we if the (!consumer) ... under what circumstance
-  // would we not have a consumer when we subscribe to a track?
   log('subscribe to track', peerId, mediaTag);
 
+  // create a receive transport if we don't already have one
   if (!recvTransport) {
     recvTransport = await createTransport('recv');
   }
 
+  // if we do already have a consumer, we shouldn't have called this
+  // method
   let consumer = findConsumerForTrack(peerId, mediaTag);
   if (consumer) {
     err('already have consumer for track', peerId, mediaTag)
     return;
   };
 
+  // ask the server to create a server-side consumer object and send
+  // us back the info we need to create a client-side consumer
   let consumerParameters = await sig('recv-track', {
     mediaTag,
     mediaPeerId: peerId,
@@ -333,18 +369,24 @@ export async function subscribeToTrack(peerId, mediaTag) {
     ...consumerParameters,
     appData: { peerId, mediaTag }
   });
-  log('created new consumer', consumer);
+  log('created new consumer', consumer.id);
+
+  // the server-side consumer will be started in paused state. wait
+  // until we're connected, then send a resume request to the server
+  // to get our first keyframe and start displaying video
   while (recvTransport.connectionState !== 'connected') {
     log('  transport connstate', recvTransport.connectionState );
     await sleep(100);
   }
   // okay, we're ready. let's ask the peer to send us media
   await resumeConsumer(consumer);
+
+  // keep track of all our consumers
   consumers.push(consumer);
 
+  // ui
   await addVideoAudio(consumer);
   updatePeersDisplay();
-  return consumer;
 }
 
 export async function unsubscribeFromTrack(peerId, mediaTag) {
@@ -352,12 +394,18 @@ export async function unsubscribeFromTrack(peerId, mediaTag) {
   if (!consumer) {
     return;
   }
+
+  log('unsubscribe from track', peerId, mediaTag);
+
   closeConsumer(consumer);
+
+  // ui
   updatePeersDisplay();
 }
 
 export async function pauseConsumer(consumer) {
   if (consumer) {
+    log('pause consumer', consumer.appData.peerId, consumer.appData.mediaTag);
     await sig('pause-consumer', { consumerId: consumer.id });
     consumer.pause();
   }
@@ -365,6 +413,7 @@ export async function pauseConsumer(consumer) {
 
 export async function resumeConsumer(consumer) {
   if (consumer) {
+    log('resume consumer', consumer.appData.peerId, consumer.appData.mediaTag);
     await sig('resume-consumer', { consumerId: consumer.id });
     consumer.resume();
   }
@@ -372,34 +421,123 @@ export async function resumeConsumer(consumer) {
 
 export async function pauseProducer(producer) {
   if (producer) {
+    log('pause producer', producer.appData.mediaTag);
     await sig('pause-producer', { producerId: producer.id });
     producer.pause();
   }
 }
 
 export async function resumeProducer(producer) {
-  warn(`resume producer ${producer.id} ${producer.appData}`);
+  if (producer) {
+    log('resume producer', producer.appData.mediaTag);
     await sig('resume-producer', { producerId: producer.id });
     producer.resume();
-}
-
-export async function producerStatsFromServer(producer) {
-  warn(`get producer ${producer.id} stats from server`);
-  let stats = await sig('producer-stats', { producerId: producer.id });
-  return stats;
+  }
 }
 
 async function closeConsumer(consumer) {
   if (!consumer) {
     return;
   }
-  log(`closing consumer ${consumer.id}`);
-  consumers = consumers.filter((c) => c !== consumer);
-  removeVideoAudio(consumer);
-  // tell the server we're closing this consumer, even though the
-  // server-side consumer may have been closed already
+  log('closing consumer', consumer.appData.peerId, consumer.appData.mediaTag);
+
+  // tell the server we're closing this consumer. (the server-side
+  // consumer may have been closed already, but that's okay.)
   sig('close-consumer', { consumerId: consumer.id });
   consumer.close();
+
+  consumers = consumers.filter((c) => c !== consumer);
+  removeVideoAudio(consumer);
+}
+
+// utility function to create a transport and hook up signaling logic
+// appropriate to the transport's direction
+//
+async function createTransport(direction) {
+  log(`create ${direction} transport`);
+
+  // ask the server to create a server-side transport object and send
+  // us back the info we need to create a client-side transport
+  let transport,
+      { transportOptions } = await sig('create-transport', { direction });
+  log ('transport options', transportOptions);
+
+  if (direction === 'recv') {
+    transport = device.createRecvTransport(transportOptions);
+  } else if (direction === 'send') {
+    transport = device.createSendTransport(transportOptions);
+  } else {
+    throw new Error(`bad transport 'direction': ${direction}`);
+  }
+
+  // mediasoup-client will emit a connect event when media needs to
+  // start flowing for the first time. send dtlsParameters to the
+  // server, then call callback() on success or errback() on failure.
+  transport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+    log('transport connect event', direction);
+    let { error } = await sig('connect-transport', {
+      transportId: transportOptions.id,
+      dtlsParameters
+    });
+    if (error) {
+      err('error connecting transport', direction, error);
+      errback();
+      return;
+    }
+    callback();
+  });
+
+  if (direction === 'send') {
+    // sending transports will emit a produce event when a new track
+    // needs to be set up to start sending. the producer's appData is
+    // passed as a parameter
+    transport.on('produce', async ({ kind, rtpParameters, appData },
+                                   callback, errback) => {
+      log('transport produce event', appData.mediaTag);
+      // we may want to start out paused (if the checkboxes in the ui
+      // aren't checked, for each media type. not very clean code, here
+      // but, you know, this isn't a real application.)
+      let paused = false;
+      if (appData.mediaTag === 'cam-video') {
+        paused = getCamPausedState();
+      } else if (appData.mediaTag === 'cam-audio') {
+        paused = getMicPausedState();
+      }
+      // tell the server what it needs to know from us in order to set
+      // up a server-side producer object, and get back a
+      // producer.id. call callback() on success or errback() on
+      // failure.
+      let { error, id } = await sig('send-track', {
+        transportId: transportOptions.id,
+        kind,
+        rtpParameters,
+        paused,
+        appData
+      });
+      if (error) {
+        err('error setting up server-side producer', error);
+        errback();
+        return;
+      }
+      callback({ id });
+    });
+  }
+
+  // for this simple demo, any time a transport transitions to closed,
+  // failed, or disconnected, leave the room and reset
+  //
+  transport.on('connectionstatechange', async (state) => {
+    log(`transport ${transport.id} connectionstatechange ${state}`);
+    // for this simple sample code, assume that transports being
+    // closed is an error (we never close these transports except when
+    // we leave the room)
+    if (state === 'closed' || state === 'failed' || state === 'disconnected') {
+      log('transport closed ... leaving the room and resetting');
+      leaveRoom();
+    }
+  });
+
+  return transport;
 }
 
 //
@@ -416,6 +554,7 @@ async function pollAndUpdate() {
   currentActiveSpeaker = activeSpeaker;
   updateActiveSpeaker();
   updateCamVideoProducerStatsDisplay();
+  updateScreenVideoProducerStatsDisplay();
   updateConsumersStatsDisplay();
 
   // decide if we need to update tracks list and video/audio
@@ -453,7 +592,7 @@ async function pollAndUpdate() {
   });
 
   lastPollSyncData = peers;
-  return ({});
+  return ({}); // return an empty object if there isn't an error
 }
 
 function sortPeers(peers) {
@@ -577,7 +716,7 @@ function makeTrackControlEl(peerName, mediaTag, mediaInfo) {
       div.appendChild(prodPauseInfo);
     }
   } catch (e) {
-    err(e);
+    console.error(e);
   }
 
   if (consumer) {
@@ -689,74 +828,6 @@ export async function getCurrentDeviceId() {
   return deviceInfo.deviceId;
 }
 
-// --
-
-async function createTransport(direction) {
-  let { transportOptions } = await sig('create-transport', { direction });
-  let transport;
-  if (direction === 'recv') {
-    transport = device.createRecvTransport(transportOptions);
-  } else if (direction === 'send') {
-    transport = device.createSendTransport(transportOptions);
-  } else {
-    throw new Error("bad transport 'direction': " + direction);
-  }
-
-  transport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-    let { error } = await sig('connect-transport', {
-      transportId: transportOptions.id,
-      dtlsParameters
-    });
-    if (error) {
-      console.error('error in connect', error, transport);
-      errback();
-      return;
-    }
-    callback();
-  });
-
-  if (direction === 'send') {
-    transport.on('produce', async ({ kind, rtpParameters, appData },
-                                   callback, errback) => {
-      let paused = false;
-      if (appData.mediaTag === 'cam-video') {
-        paused = getCamPausedState();
-      } else if (appData.mediaTag === 'cam-audio') {
-        paused = getMicPausedState();
-      }
-      let { error, id } = await sig('send-track', {
-        transportId: transportOptions.id,
-        kind,
-        rtpParameters,
-        paused,
-        appData
-      });
-      if (error) {
-        console.error(error);
-        errback();
-        return;
-      }
-      callback({ id });
-    });
-  }
-
-  transport.on('connectionstatechange', async (state) => {
-    log(`transport ${transport.id} connectionstatechange ${state}`);
-    // for this simple sample code, assume that transports being
-    // closed is an error (we never close these transports except when
-    // we leave the room)
-    if (state === 'closed' || state === 'failed' || state === 'disconnected') {
-      leaveRoom();
-    }
-  });
-
-  return transport;
-}
-
-//
-//
-//
-
 function updateActiveSpeaker() {
   $$('.track-subscribe').forEach((el) => {
     el.classList.remove('active-speaker');
@@ -775,14 +846,32 @@ function updateCamVideoProducerStatsDisplay() {
     return;
   }
   makeProducerTrackSelector({
-    internalTag: 'local-tracks',
+    internalTag: 'local-cam-tracks',
     container: tracksEl,
     peerId: myPeerId,
     producerId: camVideoProducer.id,
     currentLayer: camVideoProducer.maxSpatialLayer,
     layerSwitchFunc: (i) => {
-      console.log('client set layers');
+      console.log('client set layers for cam stream');
       camVideoProducer.setMaxSpatialLayer(i) }
+  });
+}
+
+function updateScreenVideoProducerStatsDisplay() {
+  let tracksEl = $('#screen-producer-stats');
+  tracksEl.innerHTML = '';
+  if (!screenVideoProducer || screenVideoProducer.paused) {
+    return;
+  }
+  makeProducerTrackSelector({
+    internalTag: 'local-screen-tracks',
+    container: tracksEl,
+    peerId: myPeerId,
+    producerId: screenVideoProducer.id,
+    currentLayer: screenVideoProducer.maxSpatialLayer,
+    layerSwitchFunc: (i) => {
+      console.log('client set layers for screen stream');
+      screenVideoProducer.setMaxSpatialLayer(i) }
   });
 }
 
@@ -879,24 +968,25 @@ function makeProducerTrackSelector({ internalTag, container, peerId, producerId,
 
 // just two resolutions, for now, as chrome 75 seems to ignore more
 // than two encodings
+//
 const CAM_VIDEO_SIMULCAST_ENCODINGS =
 [
-	{ maxBitrate:  120000, scaleResolutionDownBy: 8 },
-	// { maxBitrate: 300000, scaleResolutionDownBy: 2 },
+  { maxBitrate:  96000, scaleResolutionDownBy: 4 },
   { maxBitrate: 680000, scaleResolutionDownBy: 1 },
 ];
 
 function camEncodings() {
-  // return null;
   return CAM_VIDEO_SIMULCAST_ENCODINGS;
 }
 
+// how do we limit bandwidth for screen share streams?
+//
 function screenshareEncodings() {
   null;
 }
 
 //
-// our "signaling" function.
+// our "signaling" function -- just an http fetch
 //
 
 async function sig(endpoint, data, beacon) {
@@ -920,14 +1010,17 @@ async function sig(endpoint, data, beacon) {
 }
 
 //
-// uuid helper function -
-//   https://stackoverflow.com/questions/105034/create-guid-uuid-in-javascript
+// simple uuid helper function
 //
+
 function uuidv4() {
-  return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
-    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
-  )
+  return ('111-111-1111').replace(/[018]/g, () =>
+         (crypto.getRandomValues(new Uint8Array(1))[0] & 15).toString(16));
 }
+
+//
+// promisified sleep
+//
 
 async function sleep(ms) {
   return new Promise((r) => setTimeout(() => r(), ms));

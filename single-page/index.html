@@ -1,101 +1,13 @@
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" type="text/css" href="styles.css" />
   <title>mediasoup basic functionality sample code</title>
   <script>
     window.localStorage.setItem('debug', '*');
   </script>
-  <script src="client-bundle.js"></script>
 
-  <style>
-    body {
-      display: flex;
-      flex-direction: column;
-    }
-    video {
-      width: 100%;
-      max-height: 100%;
-    }
-    .arrow {
-      font-size: 140%;
-    }
-    .nowrap {
-      white-space: nowrap;
-    }
-    #outgoing-cam-streams-ctrl {
-      margin-left: 0.5em;
-      margin-top: 0.5em;
-      font-family: monospace;
-      font-size: 80%;
-    }
-    #camera-producer-stats {
-      margin-left: 1.5rem;
-    }
-    input[type="checkbox"] {
-      vertical-align: middle;
-    }
-    label {
-      vertical-align: middle;
-    }
-    #local-control {
-      flex: none;
-    }
-    #join-control, #camera-control {
-      display: inline-block;
-      vertical-align: top;
-    }
-    #join-button {
-      vertical-align: top;
-    }
-    #stop-streams {
-      display: none;
-    }
-    #camera-info {
-      margin-left: 2em;
-      font-family: monospace;
-      font-size: 80%;
-    }
-    #leave-room {
-      display: none;
-      float: right;
-    }
-    #available-tracks {
-      flex: none;
-      font-family: monospace;
-      margin-top: 1em;
-    }
-    .track-subscribe > * {
-      margin-right: 1.5em;
-    }
-    .track-subscribe > *:not(:first-child) {
-      font-family: monospace;
-      font-size: 80%;
-    }
-    #remote-video {
-      flex-grow: 1;
-      margin-top: 1em;
-      min-height: 300px;
-      border: 1px dashed black;
-      display: grid;
-      grid-column-gap: 1em;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    }
-    #remote-audio {
-      display: none;
-    }
-    .track-ctrl > div {
-      display: inline;
-    }
-    .track-ctrl * {
-      vertical-align: middle;
-    }
-    .active-speaker {
-      background-color: yellow;
-    }
-    #local-screen-pause-ctrl {
-      display: none;
-    }
-  </style>
+  <script src="client-bundle.js"></script>
 
 </head>
 <body onload="Client.main()">
@@ -132,6 +44,7 @@
            <input id="local-screen-checkbox" type="checkbox" checked
                   onchange="Client.changeScreenPaused()"></input>
            <label id="local-screen-label">screen</label>
+           <span id="screen-producer-stats" class="track-ctrl"></span>
       </div>
     </div>
   </div>

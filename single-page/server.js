@@ -12,18 +12,31 @@ const log = debugModule('demo-app');
 const warn = debugModule('demo-app:WARN');
 const err = debugModule('demo-app:ERROR');
 
+// one mediasoup worker and router
+//
 let worker, router, audioLevelObserver;
 
 //
-// data structure for our single "room".
+// and one "room" ...
 //
-// for each peer that connects, we keep up to date info about which
+const roomState = {
+  // external
+  peers: {},
+  activeSpeaker: { producerId: null, volume: null, peerId: null },
+  // internal
+  transports: {},
+  producers: [],
+  consumers: []
+}
+//
+// for each peer that connects, we keep a table of peers and what
 // tracks are being sent and received. we also need to know the last
 // time we saw the peer, so that we can disconnect clients that have
 // network issues.
 //
-// for this simple demo, we'll just send this roomState.peers data
-// structure to each client every time the client polls.
+// for this simple demo, each client polls the server at 1hz, and we
+// just send this roomState.peers data structure as our answer to each
+// poll request.
 //
 // [peerId] : {
 //   joinTs: <ms timestamp>
@@ -52,23 +65,19 @@ let worker, router, audioLevelObserver;
 //   }
 // }
 //
-// we also keep lists of transports, producers, consumers, and the
-// activeSpeaker. whenever we create a transport, producer, or
-// consumer, we save the remote peerId in the object's `appData`. for
-// producers and consumers we also keep track of the client-side
-// "media id", to correlate tracks.
+// we also send information about the active speaker, as tracked by
+// our audioLevelObserver.
 //
-const roomState = {
-  peers: {},
-  transports: {},
-  producers: [],
-  consumers: [],
-  activeSpeaker: { producerId: null, volume: null, peerId: null }
-}
+// internally, we keep lists of transports, producers, and
+// consumers. whenever we create a transport, producer, or consumer,
+// we save the remote peerId in the object's `appData`. for producers
+// and consumers we also keep track of the client-side "media tag", to
+// correlate tracks.
+//
 
 //
-// http server needs to send 'index.html' and 'client-bundle.js'.
-// might as well just send everything in this directory
+// our http server needs to send 'index.html' and 'client-bundle.js'.
+// might as well just send everything in this directory ...
 //
 
 expressApp.use(express.static(__dirname));
@@ -76,6 +85,7 @@ expressApp.use(express.static(__dirname));
 //
 // main() -- our execution entry point
 //
+
 async function main() {
   // start mediasoup
   console.log('starting mediasoup');
@@ -124,7 +134,7 @@ async function main() {
   }, 1000);
 
   // periodically update video stats we're sending to peers
-  setInterval(updatePeerStats, 5000);
+  setInterval(updatePeerStats, 3000);
 }
 
 main();
@@ -133,6 +143,7 @@ main();
 //
 // start mediasoup with a single worker and router
 //
+
 async function startMediasoup() {
   let worker = await mediasoup.createWorker({
     logLevel: config.mediasoup.worker.logLevel,
@@ -148,10 +159,12 @@ async function startMediasoup() {
 
   const mediaCodecs = config.mediasoup.router.mediaCodecs;
   const router = await worker.createRouter({ mediaCodecs });
+
+  // audioLevelObserver for signaling active speaker
+  //
   const audioLevelObserver = await router.createAudioLevelObserver({
 		interval: 800
 	});
-
   audioLevelObserver.on('volumes', (volumes) => {
     const { producer, volume } = volumes[0];
     log('audio-level volumes event', producer.appData.peerId, volume);
@@ -169,6 +182,159 @@ async function startMediasoup() {
   return { worker, router, audioLevelObserver };
 }
 
+//
+// -- our minimal signaling is just http polling --
+//
+
+// parse every request body for json, no matter the content-type. this
+// lets us use sendBeacon or fetch interchangeably to POST to
+// signaling endpoints. (sendBeacon can't set the Content-Type header)
+//
+expressApp.use(express.json({ type: '*/*' }));
+
+// --> /signaling/sync
+//
+// client polling endpoint. send back our 'peers' data structure and
+// 'activeSpeaker' info
+//
+expressApp.post('/signaling/sync', async (req, res) => {
+  let { peerId } = req.body;
+  try {
+    // make sure this peer is connected. if we've disconnected the
+    // peer because of a network outage we want the peer to know that
+    // happened, when/if it returns
+    if (!roomState.peers[peerId]) {
+      throw new Error('not connected');
+    }
+
+    // update our most-recently-seem timestamp -- we're not stale!
+    roomState.peers[peerId].lastSeenTs = Date.now();
+
+    res.send({
+      peers: roomState.peers,
+      activeSpeaker: roomState.activeSpeaker
+    });
+  } catch (e) {
+    console.error(e.message);
+    res.send({ error: e.message });
+  }
+});
+
+// --> /signaling/join-as-new-peer
+//
+// adds the peer to the roomState data structure and creates a
+// transport that the peer will use for receiving media. returns
+// router rtpCapabilities for mediasoup-client device initialization
+//
+expressApp.post('/signaling/join-as-new-peer', async (req, res) => {
+  try {
+    let { peerId } = req.body,
+        now = Date.now();
+    log('join-as-new-peer', peerId);
+
+    roomState.peers[peerId] = {
+      joinTs: now,
+      lastSeenTs: now,
+      media: {}, consumerLayers: {}, stats: {}
+    };
+
+    res.send({ routerRtpCapabilities: router.rtpCapabilities });
+  } catch (e) {
+    console.error('error in /signaling/join-as-new-peer', e);
+    res.send({ error: e });
+  }
+});
+
+// --> /signaling/leave
+//
+// removes the peer from the roomState data structure and and closes
+// all associated mediasoup objects
+//
+expressApp.post('/signaling/leave', async (req, res) => {
+  try {
+    let { peerId } = req.body;
+    log('leave', peerId);
+
+    await closePeer(peerId);
+    res.send({ left: true });
+  } catch (e) {
+    console.error('error in /signaling/leave', e);
+    res.send({ error: e });
+  }
+});
+
+function closePeer(peerId) {
+  log('closing peer', peerId);
+  for (let [id, transport] of Object.entries(roomState.transports)) {
+    closeTransport(transport);
+  }
+  delete roomState.peers[peerId];
+}
+
+function closeTransport(transport) {
+  log('closing transport', transport.id, transport.appData);
+
+  // our producer and consumer event handlers will take care of
+  // calling closeProducer() and closeConsumer() on all the producers
+  // and consumers associated with this transport
+  transport.close();
+
+  // so all we need to do, after we call transport.close(), is update
+  // our roomState data structure
+  delete roomState.transports[transport.id];
+}
+
+function closeProducer(producer) {
+  log('closing producer', producer.id, producer.appData);
+  producer.close();
+
+  // remove this producer from our roomState.producers list
+  roomState.producers = roomState.producers.filter((p) => p.id !== producer.id);
+
+  // remove this track's info from our roomState...mediaTag bookkeeping
+  if (roomState.peers[producer.appData.peerId]) {
+    delete (roomState.peers[producer.appData.peerId]
+              .media[producer.appData.mediaTag]);
+  }
+}
+
+function closeConsumer(consumer) {
+  log('closing consumer', consumer.id, consumer.appData);
+  consumer.close();
+
+  // remove this consumer from our roomState.consumers list
+  roomState.consumers = roomState.consumers.filter((c) => c.id !== consumer.id);
+
+  // remove layer info from from our roomState...consumerLayers bookkeeping
+  if (roomState.peers[consumer.appData.peerId]) {
+    delete roomState.peers[consumer.appData.peerId].consumerLayers[consumer.id];
+  }
+}
+
+
+// --> /signaling/create-transport
+//
+// create a mediasoup transport object and send back info needed
+// to create a transport object on the client side
+//
+expressApp.post('/signaling/create-transport', async (req, res) => {
+  try {
+    let { peerId, direction } = req.body;
+    log('create-transport', peerId, direction);
+
+    let transport = await createWebRtcTransport({ peerId, direction });
+    roomState.transports[transport.id] = transport;
+
+    let { id, iceParameters, iceCandidates, dtlsParameters } = transport;
+    res.send({
+      transportOptions: { id, iceParameters, iceCandidates, dtlsParameters }
+    });
+  } catch (e) {
+    console.error('error in /signaling/create-transport', e);
+    res.send({ error: e });
+  }
+});
+
 async function createWebRtcTransport({ peerId, direction }) {
   const {
     listenIps,
@@ -180,248 +346,203 @@ async function createWebRtcTransport({ peerId, direction }) {
     enableUdp: true,
     enableTcp: true,
     preferUdp: true,
-//    initialAvailableOutgoingBitrate: initialAvailableOutgoingBitrate,
+    initialAvailableOutgoingBitrate: initialAvailableOutgoingBitrate,
     appData: { peerId, clientDirection: direction }
   });
 
   return transport;
 }
 
+// --> /signaling/connect-transport
 //
-// -- our minimal signaling is just http polling --
+// called from inside a client's `transport.on('connect')` event
+// handler.
 //
-
-// parse every request body for json, no matter the content-type. this
-// lets us use sendBeacon or fetch interchangeably to POST to
-// signaling endpoints. (sendBeacon can't set the Content-Type header)
-expressApp.use(express.json({ type: '*/*' }));
-
-//
-// /signaling/join-as-new-peer
-//
-// adds the peer to the roomState data structure and creates a
-// transport that the peer will use for receiving media. returns
-// router rtpCapabilities and the new transport.
-//
-expressApp.post('/signaling/join-as-new-peer', async (req, res) => {
-  let { peerId } = req.body,
-      now = Date.now();
-
-  roomState.peers[peerId] = {
-    joinTs: now,
-    lastSeenTs: now,
-    media: {}, consumerLayers: {}, stats: {}
-  };
-
-  res.send({
-    routerRtpCapabilities: router.rtpCapabilities,
-  });
-});
-
-expressApp.post('/signaling/leave', async (req, res) => {
-  let { peerId } = req.body;
-
-  console.log('LEAVE', peerId);
-
-  await closePeer(peerId);
-  delete roomState.peers[peerId];
-  res.send({});
-});
-
-function closePeer(peerId) {
-  log(`closing peer ${peerId}`);
-  roomState.producers.filter((p) => p.appData.peerId === peerId)
-                     .forEach((p) => {
-    closeProducer(p);
-  });
-  delete roomState.peers[peerId];
-}
-
-function closeProducer(producer) {
-  for (let consumer of [...roomState.consumers]) {
-    if (consumer.producerId === producer.id) {
-      closeConsumer(consumer);
-    }
-  }
-  producer.close();
-  roomState.producers = roomState.producers.filter((p) => p.id !== producer.id);
-  if (roomState.peers[producer.appData.peerId]) {
-    delete (roomState.peers[producer.appData.peerId]
-              .media[producer.appData.mediaTag]);
-  }
-}
-
-function closeConsumer(consumer) {
-  log(`closing consumer ${consumer.id}`);
-  consumer.close();
-  roomState.consumers = roomState.consumers.filter((c) => c.id !== consumer.id);
-  if (roomState.peers[consumer.appData.peerId]) {
-    delete roomState.peers[consumer.appData.peerId].consumerLayers[consumer.id];
-  }
-}
-
-expressApp.post('/signaling/sync', async (req, res) => {
-  let { peerId } = req.body;
-  try {
-    // make sure this peer is connected. if we've disconnected the
-    // peer because of a network outage we want the peer to know that
-    // happened, when/if it returns
-    if (!roomState.peers[peerId]) {
-      throw new Error('not connected');
-    }
-    roomState.peers[peerId].lastSeenTs = Date.now();
-    res.send({
-      peers: roomState.peers,
-      activeSpeaker: roomState.activeSpeaker
-    });
-  } catch (e) {
-    console.error(e.message);
-    res.send({ error: e.message });
-  }
-});
-
-//
-expressApp.post('/signaling/create-transport', async (req, res) => {
-  let { peerId, direction } = req.body;
-  console.log('CREATE', req.body);
-
-  let transport = await createWebRtcTransport({ peerId, direction });
-  roomState.transports[transport.id] = transport;
-
-  let { id, iceParameters, iceCandidates, dtlsParameters } = transport;
-  res.send({
-    transportOptions: { id, iceParameters, iceCandidates, dtlsParameters }
-  });
-});
-
 expressApp.post('/signaling/connect-transport', async (req, res) => {
-  let { transportId, dtlsParameters } = req.body;
+  try {
+    let { peerId, transportId, dtlsParameters } = req.body,
+        transport = roomState.transports[transportId];
 
-  console.log('CONNECT', transportId);
+    if (!transport) {
+      err(`connect-transport: server-side transport ${transportId} not found`);
+      res.send({ error: `server-side transport ${transportId} not found` });
+      return;
+    }
 
-  if (!roomState.transports[transportId]) {
-    res.send({ error: `server-side transport ${transportId} not found` });
-    return;
+    log('connect-transport', peerId, transport.appData);
+
+    await transport.connect({ dtlsParameters });
+    res.send({ connected: true });
+  } catch (e) {
+    console.error('error in /signaling/connect-transport', e);
+    res.send({ error: e });
   }
-  await roomState.transports[transportId].connect({ dtlsParameters });
-  res.send({});
 });
 
+// --> /signaling/close-transport
+//
+// called by a client that wants to close a single transport (for
+// example, a client that is no longer sending any media).
 //
 expressApp.post('/signaling/close-transport', async (req, res) => {
-  let { peerId, transportId } = req.body;
-  log(`close-transport from ${peerId} on transport ${transportId}`);
-
   try {
-    let transport = roomState.transports[transportId];
+    let { peerId, transportId } = req.body,
+        transport = roomState.transports[transportId];
+
     if (!transport) {
-      throw new Error(`can not find transport ${transportId}`);
+      err(`close-transport: server-side transport ${transportId} not found`);
+      res.send({ error: `server-side transport ${transportId} not found` });
+      return;
     }
-    // close all producers and consumers
-    for (let producer of [...roomState.producers]) {
-      if (producer.appData.transportId === transport.id) {
-        closeProducer(producer);
-      }
-    }
-    // close the transport
-    transport.close();
-    roomState.peers[peerId].media = {};
-    res.send({});
+
+    log('close-transport', peerId, transport.appData);
+
+    closeTransport(transport);
+    res.send({ closed: true });
   } catch (e) {
-    err(e);
+    console.error('error in /signaling/close-transport', e);
     res.send({ error: e.message });
   }
 });
 
+// --> /signaling/close-producer
+//
+// called by a client that is no longer sending a specific track
+//
 expressApp.post('/signaling/close-producer', async (req, res) => {
-  let { peerId, producerId } = req.body;
-  log(`close-producer from ${peerId} on producer ${producerId}`);
-
   try {
-    let producer = roomState.producers.find((p) => p.id === producerId);
+    let { peerId, producerId } = req.body,
+        producer = roomState.producers.find((p) => p.id === producerId);
+
     if (!producer) {
-      throw new Error(`can not find producer ${producerId}`);
+      err(`close-producer: server-side producer ${producerId} not found`);
+      res.send({ error: `server-side producer ${producerId} not found` });
+      return;
     }
+
+    log('close-producer', peerId, producer.appData);
+
     closeProducer(producer);
-    res.send({});
+    res.send({ closed: true });
   } catch (e) {
-    err(e);
+    console.error(e);
     res.send({ error: e.message });
   }
 });
 
 
+// --> /signaling/send-track
+//
+// called from inside a client's `transport.on('produce')` event handler.
 //
 expressApp.post('/signaling/send-track', async (req, res) => {
-  let { peerId, transportId, kind, rtpParameters,
-        paused=false, appData } = req.body;
-  log(`send-track from ${peerId}, ${kind}, ${JSON.stringify(appData)}, ${paused ?'paused':''}`);
-  if (!roomState.transports[transportId]) {
-    let msg = `server-side transport ${transportId} not found`;
-    warn(msg);
-    res.send({ error: msg });
-    return;
+  try {
+    let { peerId, transportId, kind, rtpParameters,
+          paused=false, appData } = req.body,
+        transport = roomState.transports[transportId];
+
+    if (!transport) {
+      err(`send-track: server-side transport ${transportId} not found`);
+      res.send({ error: `server-side transport ${transportId} not found`});
+      return;
+    }
+
+    let producer = await transport.produce({
+      kind,
+      rtpParameters,
+      paused,
+      appData: { ...appData, peerId, transportId }
+    });
+
+    // if our associated transport closes, close ourself, too
+    producer.on('transportclose', () => {
+      log('producer\'s transport closed', producer.id);
+      closeProducer(producer);
+    });
+
+    // monitor audio level of this producer. we call addProducer() here,
+    // but we don't ever need to call removeProducer() because the core
+    // AudioLevelObserver code automatically removes closed producers
+    if (producer.kind === 'audio') {
+      audioLevelObserver.addProducer({ producerId: producer.id });
+    }
+
+    roomState.producers.push(producer);
+    roomState.peers[peerId].media[appData.mediaTag] = {
+      paused,
+      encodings: rtpParameters.encodings
+    };
+
+    res.send({ id: producer.id });
+  } catch (e) {
   }
-  let producer = await roomState.transports[transportId].produce({
-    kind,
-    rtpParameters,
-    paused,
-    appData: { ...appData, peerId, transportId }
-  });
-
-  roomState.producers.push(producer);
-  // monitor audio level of this producer. we call addProducer() here,
-  // but we don't ever need to call removeProducer() because the core
-  // AudioLevelObserver code automatically removes closed producers
-  if (producer.kind === 'audio') {
-    audioLevelObserver.addProducer({ producerId: producer.id });
-  }
-
-  res.send({ id: producer.id });
-
-  // todo -- do something if media id is already found (replace track?)
-  //
-  roomState.peers[peerId].media[appData.mediaTag] = {
-    paused,
-    encodings: rtpParameters.encodings
-  };
 });
 
+// --> /signaling/recv-track
+//
+// create a mediasoup consumer object, hook it up to a producer here
+// on the server side, and send back info needed to create a consumer
+// object on the client side. always start consumers paused. client
+// will request media to resume when the connection completes
 //
 expressApp.post('/signaling/recv-track', async (req, res) => {
-  let { peerId, mediaPeerId, mediaTag, rtpCapabilities } = req.body;
   try {
-    console.log('RECV-TRACK', peerId, mediaPeerId, mediaTag);
+    let { peerId, mediaPeerId, mediaTag, rtpCapabilities } = req.body;
 
     let producer = roomState.producers.find(
       (p) => p.appData.mediaTag === mediaTag &&
              p.appData.peerId === mediaPeerId
     );
+
     if (!producer) {
-      throw new Error('can not find producer');
+      let msg = 'server-side producer for ' +
+                  `${mediaPeerId}:${mediaTag} not found`;
+      err('recv-track: ' + msg);
+      res.send({ error: msg });
+      return;
     }
+
     if (!router.canConsume({ producerId: producer.id,
                              rtpCapabilities })) {
-      throw new Error('can not find producer');
+      let msg = `client cannot consume ${mediaPeerId}:${mediaTag}`;
+      err(`recv-track: ${peerId} ${msg}`);
+      res.send({ error: msg });
+      return;
     }
 
     let transport = Object.values(roomState.transports).find((t) =>
       t.appData.peerId === peerId && t.appData.clientDirection === 'recv'
     );
+
     if (!transport) {
-      throw new Error(`can not find recv transport for ${peerId}`);
+      let msg = `server-side recv transport for ${peerId} not found`;
+      err('recv-track: ' + msg);
+      res.send({ error: msg });
+      return;
     }
 
     let consumer = await transport.consume({
       producerId: producer.id,
       rtpCapabilities,
-      paused: true,
+      paused: true, // see note above about always starting paused
       appData: { peerId, mediaPeerId, mediaTag }
+    });
+
+    // need both 'transportclose' and 'producerclose' event handlers,
+    // to make sure we close and clean up consumers in all
+    // circumstances
+    consumer.on('transportclose', () => {
+      log(`consumer's transport closed`, consumer.id);
+      closeConsumer(consumer);
+    });
+    consumer.on('producerclose', () => {
+      log(`consumer's producer closed`, consumer.id);
+      closeConsumer(consumer);
     });
 
     // stick this consumer in our list of consumers to keep track of,
     // and create a data structure to track the client-relevant state
-    // of this consume
+    // of this consumer
     roomState.consumers.push(consumer);
     roomState.peers[peerId].consumerLayers[consumer.id] = {
       currentLayer: null,
@@ -430,13 +551,14 @@ expressApp.post('/signaling/recv-track', async (req, res) => {
 
     // update above data structure when layer changes.
     consumer.on('layerschange', (layers) => {
-      log('consumer layerschange', peerId, mediaPeerId, mediaTag, layers);
+      log(`consumer layerschange ${mediaPeerId}->${peerId}`, mediaTag, layers);
       if (roomState.peers[peerId] &&
           roomState.peers[peerId].consumerLayers[consumer.id]) {
         roomState.peers[peerId].consumerLayers[consumer.id]
           .currentLayer = layers && layers.spatialLayer;
       }
     });
+
     res.send({
       producerId: producer.id,
       id: consumer.id,
@@ -446,125 +568,168 @@ expressApp.post('/signaling/recv-track', async (req, res) => {
       producerPaused: consumer.producerPaused
     });
   } catch (e) {
-    console.error(e);
-    res.send ({ error: e.message });
+    console.error('error in /signaling/recv-track', e);
+    res.send ({ error: e });
   }
 });
 
+// --> /signaling/pause-consumer
+//
+// called to pause receiving a track for a specific client
+//
 expressApp.post('/signaling/pause-consumer', async (req, res) => {
-  let { peerId, consumerId } = req.body;
-  console.log('PAUSE-TRACK', peerId, consumerId);
-
   try {
-    let consumer = roomState.consumers.find((c) => c.id === consumerId)
+    let { peerId, consumerId } = req.body,
+        consumer = roomState.consumers.find((c) => c.id === consumerId);
+
     if (!consumer) {
-      throw new Error(`can not find consumer ${consumerId}`);
+      err(`pause-consumer: server-side consumer ${consumerId} not found`);
+      res.send({ error: `server-side producer ${consumerId} not found` });
+      return;
     }
+
+    log('pause-consumer', consumer.appData);
+
     consumer.pause();
-    res.send({});
+
+    res.send({ paused: true});
   } catch (e) {
-    res.send({ error: e.message });
+    console.error('error in /signaling/pause-consumer', e);
+    res.send({ error: e });
   }
 });
 
+// --> /signaling/resume-consumer
+//
+// called to resume receiving a track for a specific client
+//
 expressApp.post('/signaling/resume-consumer', async (req, res) => {
-  let { peerId, consumerId } = req.body;
-  console.log('RESUME-TRACK', peerId, consumerId);
-
   try {
-    let consumer = roomState.consumers.find((c) => c.id === consumerId)
+    let { peerId, consumerId } = req.body,
+        consumer = roomState.consumers.find((c) => c.id === consumerId);
+
     if (!consumer) {
-      throw new Error(`can not find consumer ${consumerId}`);
+      err(`pause-consumer: server-side consumer ${consumerId} not found`);
+      res.send({ error: `server-side consumer ${consumerId} not found` });
+      return;
     }
+
+    log('resume-consumer', consumer.appData);
+
     consumer.resume();
-    res.send({});
+
+    res.send({ resumed: true });
   } catch (e) {
-    res.send({ error: e.message });
+    console.error('error in /signaling/resume-consumer', e);
+    res.send({ error: e });
   }
 });
 
+// --> /signalign/close-consumer
+//
+// called to stop receiving a track for a specific client. close and
+// clean up consumer object
+//
 expressApp.post('/signaling/close-consumer', async (req, res) => {
-  let { peerId, consumerId } = req.body;
-  console.log('CLOSE-TRACK', peerId, consumerId);
-
   try {
-    let consumer = roomState.consumers.find((c) => c.id === consumerId)
+  let { peerId, consumerId } = req.body,
+      consumer = roomState.consumers.find((c) => c.id === consumerId);
+
     if (!consumer) {
-      throw new Error(`can not find consumer ${consumerId}`);
+      err(`close-consumer: server-side consumer ${consumerId} not found`);
+      res.send({ error: `server-side consumer ${consumerId} not found` });
+      return;
     }
+
     closeConsumer(consumer);
-    res.send({});
+
+    res.send({ closed: true });
   } catch (e) {
-    res.send({ error: e.message });
+    console.error('error in /signaling/close-consumer', e);
+    res.send({ error: e });
   }
 });
 
+// --> /signaling/consumer-set-layers
+//
+// called to set the largest spatial layer that a specific client
+// wants to receive
+//
 expressApp.post('/signaling/consumer-set-layers', async (req, res) => {
-  let { peerId, consumerId, spatialLayer } = req.body;
-  console.log('SET-LAYERS', peerId, consumerId);
-
   try {
-    let consumer = roomState.consumers.find((c) => c.id === consumerId)
+    let { peerId, consumerId, spatialLayer } = req.body,
+        consumer = roomState.consumers.find((c) => c.id === consumerId);
+
     if (!consumer) {
-      throw new Error(`can not find consumer ${consumerId}`);
+      err(`consumer-set-layers: server-side consumer ${consumerId} not found`);
+      res.send({ error: `server-side consumer ${consumerId} not found` });
+      return;
     }
+
+    log('consumer-set-layers', spatialLayer, consumer.appData);
+
     consumer.setPreferredLayers({ spatialLayer });
-    res.send({});
+
+    res.send({ layersSet: true });
   } catch (e) {
-    res.send({ error: e.message });
+    console.error('error in /signaling/consumer-set-layers', e);
+    res.send({ error: e });
   }
 });
 
+// --> /signaling/pause-producer
+//
+// called to stop sending a track from a specific client
+//
 expressApp.post('/signaling/pause-producer', async (req, res) => {
-  let { peerId, producerId } = req.body;
-  log(`pause-producer from ${peerId} on producer ${producerId}`);
-
   try {
-    let producer = roomState.producers.find((p) => p.id === producerId)
+    let { peerId, producerId } = req.body,
+        producer = roomState.producers.find((p) => p.id === producerId);
+
     if (!producer) {
-      throw new Error(`can not find producer ${producerId}`);
+      err(`pause-producer: server-side producer ${producerId} not found`);
+      res.send({ error: `server-side producer ${producerId} not found` });
+      return;
     }
+
+    log('pause-producer', producer.appData);
+
     producer.pause();
+
     roomState.peers[peerId].media[producer.appData.mediaTag].paused = true;
-    res.send({});
+
+    res.send({ paused: true });
   } catch (e) {
-    err(e);
-    res.send({ error: e.message });
+    console.error('error in /signaling/pause-producer', e);
+    res.send({ error: e });
   }
 });
 
+// --> /signaling/resume-producer
+//
+// called to resume sending a track from a specific client
+//
 expressApp.post('/signaling/resume-producer', async (req, res) => {
-  let { peerId, producerId } = req.body;
-  log(`resume-producer from ${peerId} on producer ${producerId}`);
-
   try {
-    let producer = roomState.producers.find((p) => p.id === producerId)
+    let { peerId, producerId } = req.body,
+        producer = roomState.producers.find((p) => p.id === producerId);
+
     if (!producer) {
-      throw new Error(`can not find producer ${producerId}`);
+      err(`resume-producer: server-side producer ${producerId} not found`);
+      res.send({ error: `server-side producer ${producerId} not found` });
+      return;
     }
+
+    log('resume-producer', producer.appData);
+
     producer.resume();
+
     roomState.peers[peerId].media[producer.appData.mediaTag].paused = false;
-    res.send({});
-  } catch (e) {
-    err(e);
-    res.send({ error: e.message });
-  }
-});
 
-expressApp.post('/signaling/producer-stats', async (req, res) => {
-  let { peerId, producerId } = req.body;
-  log(`producer-stats from ${peerId} on producer ${producerId}`);
-
-  try {
-    let producer = roomState.producers.find((p) => p.id === producerId)
-    if (!producer) {
-      throw new Error(`can not find producer ${producerId}`);
-    }
-    let stats = await producer.getStats();
-    res.send({ stats });
+    res.send({ resumed: true });
   } catch (e) {
-    err(e);
-    res.send({ error: e.message });
+    console.error('error in /signaling/resume-producer', e);
+    res.send({ error: e });
   }
 });
 

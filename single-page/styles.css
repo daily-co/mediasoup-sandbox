@@ -1,0 +1,106 @@
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+video {
+  width: 100%;
+  max-height: 100%;
+}
+
+label {
+  vertical-align: middle;
+}
+
+input[type="checkbox"] {
+  vertical-align: middle;
+}
+
+.arrow {
+  font-size: 140%;
+}
+.nowrap {
+  white-space: nowrap;
+}
+
+#outgoing-cam-streams-ctrl {
+  margin-left: 0.5em;
+  margin-top: 0.5em;
+  font-family: monospace;
+  font-size: 80%;
+}
+
+#camera-producer-stats {
+  margin-left: 1.5rem;
+}
+
+#local-control {
+  flex: none;
+}
+
+#join-control, #camera-control {
+  display: inline-block;
+  vertical-align: top;
+}
+
+#join-button {
+  vertical-align: top;
+}
+
+#stop-streams {
+  display: none;
+}
+
+#camera-info {
+  margin-left: 2em;
+  font-family: monospace;
+  font-size: 80%;
+}
+
+#leave-room {
+  display: none;
+  float: right;
+}
+
+#available-tracks {
+  flex: none;
+  font-family: monospace;
+  margin-top: 1em;
+}
+
+.track-subscribe > * {
+  margin-right: 1.5em;
+}
+.track-subscribe > *:not(:first-child) {
+  font-family: monospace;
+  font-size: 80%;
+}
+
+#remote-video {
+  flex-grow: 1;
+  margin-top: 1em;
+  min-height: 300px;
+  border: 1px dashed black;
+  display: grid;
+  grid-column-gap: 1em;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+#remote-audio {
+  display: none;
+}
+
+.track-ctrl > div {
+  display: inline;
+}
+.track-ctrl * {
+  vertical-align: middle;
+}
+
+.active-speaker {
+  background-color: yellow;
+}
+
+#local-screen-pause-ctrl {
+  display: none;
+}
