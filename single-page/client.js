@@ -59,6 +59,7 @@ export let device,
            camVideoProducer,
            camAudioProducer,
            screenVideoProducer,
+           screenAudioProducer,
            currentActiveSpeaker = {},
            lastPollSyncData = {},
            consumers = [],
@@ -177,14 +178,25 @@ export async function startScreenshare() {
   }
 
   // get a screen share track
-  localScreen = await navigator.mediaDevices.getDisplayMedia();
+  localScreen = await navigator.mediaDevices.getDisplayMedia({
+    video: true,
+    audio: true
+  });
 
-  // create a producer
+  // create a producer for video
   screenVideoProducer = await sendTransport.produce({
     track: localScreen.getVideoTracks()[0],
     encodings: screenshareEncodings(),
     appData: { mediaTag: 'screen-video' }
   });
+
+  // create a producer for audio, if we have it
+  if (localScreen.getAudioTracks().length) {
+    screenAudioProducer = await sendTransport.produce({
+      track: localScreen.getAudioTracks()[0],
+      appData: { mediaTag: 'screen-audio' }
+    });
+  }
 
   // handler for screen share stopped event (triggered by the
   // browser's built-in screen sharing ui)
@@ -195,11 +207,27 @@ export async function startScreenshare() {
                               { producerId: screenVideoProducer.id });
     screenVideoProducer.close();
     screenVideoProducer = null;
+    if (error) {
+      err(error);
+    }
+    if (screenAudioProducer) {
+      let { error } = await sig('close-producer',
+                                 { producerId: screenAudioProducer.id });
+      screenAudioProducer.close();
+      screenAudioProducer = null;
+      if (error) {
+        err(error);
+      }
+    }
     $('#local-screen-pause-ctrl').style.display = 'none';
+    $('#local-screen-audio-pause-ctrl').style.display = 'none';
     $('#share-screen').style.display = 'initial';
   }
 
-  $('#local-screen-pause-ctrl').style.display = 'initial';
+  $('#local-screen-pause-ctrl').style.display = 'block';
+  if (screenAudioProducer) {
+    $('#local-screen-audio-pause-ctrl').style.display = 'block';
+  }
 }
 
 export async function startCamera() {
@@ -285,6 +313,7 @@ export async function stopStreams() {
   camVideoProducer = null;
   camAudioProducer = null;
   screenVideoProducer = null;
+  screenAudioProducer = null;
   localCam = null;
   localScreen = null;
 
@@ -292,6 +321,7 @@ export async function stopStreams() {
   $('#send-camera').style.display = 'initial';
   $('#share-screen').style.display = 'initial';
   $('#local-screen-pause-ctrl').style.display = 'none';
+  $('#local-screen-audio-pause-ctrl').style.display = 'none';
   showCameraInfo();
 }
 
@@ -321,7 +351,8 @@ export async function leaveRoom() {
   sendTransport = null;
   camVideoProducer = null;
   camAudioProducer = null;
-  screenVideoProducer  = null;
+  screenVideoProducer = null;
+  screenAudioProducer = null;
   localCam = null;
   localScreen = null;
   lastPollSyncData = {};
@@ -335,6 +366,7 @@ export async function leaveRoom() {
   $('#remote-video').innerHTML = '';
   $('#share-screen').style.display = 'initial';
   $('#local-screen-pause-ctrl').style.display = 'none';
+  $('#local-screen-audio-pause-ctrl').style.display = 'none';
   showCameraInfo();
   updateCamVideoProducerStatsDisplay();
   updateScreenVideoProducerStatsDisplay();
@@ -622,6 +654,10 @@ export function getScreenPausedState() {
   return !$('#local-screen-checkbox').checked;
 }
 
+export function getScreenAudioPausedState() {
+  return !$('#local-screen-audio-checkbox').checked;
+}
+
 export async function changeCamPaused() {
   if (getCamPausedState()) {
     pauseProducer(camVideoProducer);
@@ -652,6 +688,16 @@ export async function changeScreenPaused() {
   }
 }
 
+export async function changeScreenAudioPaused() {
+  if (getScreenAudioPausedState()) {
+    pauseProducer(screenAudioProducer);
+    $('#local-screen-audio-label').innerHTML = 'screen (paused)';
+  } else {
+    resumeProducer(screenAudioProducer);
+    $('#local-screen-audio-label').innerHTML = 'screen';
+  }
+}
+
 
 export async function updatePeersDisplay(peersInfo = lastPollSyncData,
                                          sortedPeers = sortPeers(peersInfo)) {
@@ -672,6 +718,11 @@ export async function updatePeersDisplay(peersInfo = lastPollSyncData,
     $('#available-tracks')
       .appendChild(makeTrackControlEl('my', 'screen-video',
                                     peersInfo[myPeerId].media['screen-video']));
+  }
+  if (screenAudioProducer) {
+    $('#available-tracks')
+      .appendChild(makeTrackControlEl('my', 'screen-audio',
+                                    peersInfo[myPeerId].media['screen-audio']));
   }
 
   for (let peer of sortedPeers) {

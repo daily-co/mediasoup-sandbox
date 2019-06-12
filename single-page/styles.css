@@ -104,3 +104,7 @@ input[type="checkbox"] {
 #local-screen-pause-ctrl {
   display: none;
 }
+
+#local-screen-audio-pause-ctrl {
+  display: none;
+}
