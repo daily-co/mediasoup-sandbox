@@ -27,8 +27,8 @@ The demo "application" is a single video-call "room." Super
 simple.
 
 Click on `[send camera streams]`. You should see listings for
-your own video and audio track show up, with `subscribe` buttons next
-to them. Click the `subscribe` button next to the video track to
+your own video and audio track show up, with `[subscribe]` buttons next
+to them. Click the `[subscribe]` button next to the video track to
 subscribe to your camera feed.
 
 Don't subscribe to your own audio feed. :-)
@@ -42,9 +42,14 @@ sending/receiving.
 ## Clients on other machines
 
 To send media from a client that's not running on localhost, you'll
-need to point the `sslCrt` and `sslKey` values in `config.js` at an
-ssl certificate and key pair. You can use a
-[self-signed certificate](https://devcenter.heroku.com/articles/ssl-certificate-self)
+need to enable HTTPS. Point the `sslCrt` and `sslKey` values in
+`config.js` at an ssl certificate and key pair. You can use a
+[self-signed
+certificate](https://devcenter.heroku.com/articles/ssl-certificate-self).
+
+If `sslCrt`/`sslKey` are found, the server will start as an HTTPS
+rather than an HTTP server. Check the console output to confirm that
+this happened as expected.
 
 You'll also need to add an entry to the `webRtcTransport.listIps` array.
 
