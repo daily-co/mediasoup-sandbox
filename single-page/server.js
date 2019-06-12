@@ -266,7 +266,9 @@ expressApp.post('/signaling/leave', async (req, res) => {
 function closePeer(peerId) {
   log('closing peer', peerId);
   for (let [id, transport] of Object.entries(roomState.transports)) {
-    closeTransport(transport);
+    if (transport.appData.peerId === peerId) {
+      closeTransport(transport);
+    }
   }
   delete roomState.peers[peerId];
 }

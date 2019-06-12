@@ -10,38 +10,6 @@ const log = debugModule('demo-app');
 const warn = debugModule('demo-app:WARN');
 const err = debugModule('demo-app:ERROR');
 
-// questions:
-//
-//   see notes in docs for consumer.on("layerschange") about
-//   detecting deactivation due to bandwidth. haven't been able
-//   to trigger this in testing
-//
-//   'silence' is not a documented event. submit a patch
-//
-//   a paused producer still seems to send a fair amount of
-//   bytes. does pausing not stop all simulcast tracks? some evidence
-//   for this in that setting producer send to the lowest simulcast
-//   layer, then pausing, seems to send at much lower bandwidth than
-//   pausing without limiting simulcast to lowest layer, first
-//
-//   firefox seems not to respect setMaxSpatialLayers
-//
-//   what's the best way to set maximum bitrate for screen shares
-//   (chrome crashes if multiple encodings are provided for screen
-//   share streams)
-//
-//   "no Producer for received SDES chunk" after calling producer.close()
-//   on both server and client (both Chrome and Firefox)
-//
-//   "no Consumer found for received Receiver report" when consuming a
-//   simulcast stream
-//
-//   "inital "no Producer" messages while hooking up stream
-//
-//   firefox video rotation issue?
-//
-//   use h264 when sending from mobile safari?
-
 
 //
 // export all the references we use internally to manage call state,
@@ -70,6 +38,7 @@ export let device,
 //
 
 export async function main() {
+  console.log(`starting up ... my peerId is ${myPeerId}`);
   try {
     device = new mediasoup.Device();
   } catch (e) {
