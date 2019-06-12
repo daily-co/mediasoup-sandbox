@@ -273,36 +273,45 @@ function closePeer(peerId) {
   delete roomState.peers[peerId];
 }
 
-function closeTransport(transport) {
-  log('closing transport', transport.id, transport.appData);
+async function closeTransport(transport) {
+  try {
+    log('closing transport', transport.id, transport.appData);
 
-  // our producer and consumer event handlers will take care of
-  // calling closeProducer() and closeConsumer() on all the producers
-  // and consumers associated with this transport
-  transport.close();
+    // our producer and consumer event handlers will take care of
+    // calling closeProducer() and closeConsumer() on all the producers
+    // and consumers associated with this transport
+    await transport.close();
 
-  // so all we need to do, after we call transport.close(), is update
-  // our roomState data structure
-  delete roomState.transports[transport.id];
-}
-
-function closeProducer(producer) {
-  log('closing producer', producer.id, producer.appData);
-  producer.close();
-
-  // remove this producer from our roomState.producers list
-  roomState.producers = roomState.producers.filter((p) => p.id !== producer.id);
-
-  // remove this track's info from our roomState...mediaTag bookkeeping
-  if (roomState.peers[producer.appData.peerId]) {
-    delete (roomState.peers[producer.appData.peerId]
-              .media[producer.appData.mediaTag]);
+    // so all we need to do, after we call transport.close(), is update
+    // our roomState data structure
+    delete roomState.transports[transport.id];
+  } catch (e) {
+    err(e);
   }
 }
 
-function closeConsumer(consumer) {
+async function closeProducer(producer) {
+  log('closing producer', producer.id, producer.appData);
+  try {
+    await producer.close();
+
+    // remove this producer from our roomState.producers list
+    roomState.producers = roomState.producers
+      .filter((p) => p.id !== producer.id);
+
+    // remove this track's info from our roomState...mediaTag bookkeeping
+    if (roomState.peers[producer.appData.peerId]) {
+      delete (roomState.peers[producer.appData.peerId]
+              .media[producer.appData.mediaTag]);
+    }
+  } catch (e) {
+    err(e);
+  }
+}
+
+async function closeConsumer(consumer) {
   log('closing consumer', consumer.id, consumer.appData);
-  consumer.close();
+  await consumer.close();
 
   // remove this consumer from our roomState.consumers list
   roomState.consumers = roomState.consumers.filter((c) => c.id !== consumer.id);
@@ -399,7 +408,7 @@ expressApp.post('/signaling/close-transport', async (req, res) => {
 
     log('close-transport', peerId, transport.appData);
 
-    closeTransport(transport);
+    await closeTransport(transport);
     res.send({ closed: true });
   } catch (e) {
     console.error('error in /signaling/close-transport', e);
@@ -424,7 +433,7 @@ expressApp.post('/signaling/close-producer', async (req, res) => {
 
     log('close-producer', peerId, producer.appData);
 
-    closeProducer(producer);
+    await closeProducer(producer);
     res.send({ closed: true });
   } catch (e) {
     console.error(e);
@@ -592,7 +601,7 @@ expressApp.post('/signaling/pause-consumer', async (req, res) => {
 
     log('pause-consumer', consumer.appData);
 
-    consumer.pause();
+    await consumer.pause();
 
     res.send({ paused: true});
   } catch (e) {
@@ -618,7 +627,7 @@ expressApp.post('/signaling/resume-consumer', async (req, res) => {
 
     log('resume-consumer', consumer.appData);
 
-    consumer.resume();
+    await consumer.resume();
 
     res.send({ resumed: true });
   } catch (e) {
@@ -643,7 +652,7 @@ expressApp.post('/signaling/close-consumer', async (req, res) => {
       return;
     }
 
-    closeConsumer(consumer);
+    await closeConsumer(consumer);
 
     res.send({ closed: true });
   } catch (e) {
@@ -670,7 +679,7 @@ expressApp.post('/signaling/consumer-set-layers', async (req, res) => {
 
     log('consumer-set-layers', spatialLayer, consumer.appData);
 
-    consumer.setPreferredLayers({ spatialLayer });
+    await consumer.setPreferredLayers({ spatialLayer });
 
     res.send({ layersSet: true });
   } catch (e) {
@@ -696,7 +705,7 @@ expressApp.post('/signaling/pause-producer', async (req, res) => {
 
     log('pause-producer', producer.appData);
 
-    producer.pause();
+    await producer.pause();
 
     roomState.peers[peerId].media[producer.appData.mediaTag].paused = true;
 
@@ -724,7 +733,7 @@ expressApp.post('/signaling/resume-producer', async (req, res) => {
 
     log('resume-producer', producer.appData);
 
-    producer.resume();
+    await producer.resume();
 
     roomState.peers[peerId].media[producer.appData.mediaTag].paused = false;
 
