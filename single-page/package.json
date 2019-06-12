@@ -4,9 +4,9 @@
   "description": "Mediasoup Sample Code",
   "main": "server.js",
   "scripts": {
-    "build": "rollup -c",
-    "build-client-dev": "rollup -c -w",
-    "start": "rollup -c && node server.js"
+    "build": "npx rollup -c",
+    "build-client-dev": "npx rollup -c -w",
+    "start": "npx rollup -c && node server.js"
   },
   "author": "Kwindla Hultman Kramer",
   "license": "ISC",
