@@ -119,7 +119,11 @@ export async function sendCameraStreams() {
     appData: { mediaTag: 'cam-video' }
   });
   if (getCamPausedState()) {
-    camVideoProducer.pause();
+    try {
+      await camVideoProducer.pause();
+    } catch (e) {
+      console.error(e);
+    }
   }
 
   // same thing for audio, but we can use our already-created
@@ -128,7 +132,11 @@ export async function sendCameraStreams() {
     appData: { mediaTag: 'cam-audio' }
   });
   if (getMicPausedState()) {
-    camAudioProducer.pause();
+    try {
+      camAudioProducer.pause();
+    } catch (e) {
+      console.error(e);
+    }
   }
 
   $('#stop-streams').style.display = 'initial';
@@ -171,22 +179,26 @@ export async function startScreenshare() {
   // browser's built-in screen sharing ui)
   screenVideoProducer.track.onended = async () => {
     log('screen share stopped');
-    await screenVideoProducer.pause();
-    let { error } = await sig('close-producer',
-                              { producerId: screenVideoProducer.id });
-    screenVideoProducer.close();
-    screenVideoProducer = null;
-    if (error) {
-      err(error);
-    }
-    if (screenAudioProducer) {
+    try {
+      await screenVideoProducer.pause();
       let { error } = await sig('close-producer',
-                                 { producerId: screenAudioProducer.id });
-      screenAudioProducer.close();
-      screenAudioProducer = null;
+                                { producerId: screenVideoProducer.id });
+      await screenVideoProducer.close();
+      screenVideoProducer = null;
       if (error) {
         err(error);
       }
+      if (screenAudioProducer) {
+        let { error } = await sig('close-producer',
+                                  { producerId: screenAudioProducer.id });
+        await screenAudioProducer.close();
+        screenAudioProducer = null;
+        if (error) {
+          err(error);
+        }
+      }
+    } catch (e) {
+      console.error(e);
     }
     $('#local-screen-pause-ctrl').style.display = 'none';
     $('#local-screen-audio-pause-ctrl').style.display = 'none';
@@ -277,7 +289,11 @@ export async function stopStreams() {
   // the camVideoProducer and camAudioProducer are closed,
   // mediasoup-client stops the local cam tracks, so we don't need to
   // do anything except set all our local variables to null.
-  sendTransport.close();
+  try {
+    await sendTransport.close();
+  } catch (e) {
+    console.error(e);
+  }
   sendTransport = null;
   camVideoProducer = null;
   camAudioProducer = null;
@@ -314,8 +330,12 @@ export async function leaveRoom() {
   // closing the transports closes all producers and consumers. we
   // don't need to do anything beyond closing the transports, except
   // to set all our local variables to their initial states
-  recvTransport && recvTransport.close();
-  sendTransport && sendTransport.close();
+  try {
+    recvTransport && await recvTransport.close();
+    sendTransport && await sendTransport.close();
+  } catch (e) {
+    console.error(e);
+  }
   recvTransport = null;
   sendTransport = null;
   camVideoProducer = null;
@@ -397,42 +417,60 @@ export async function unsubscribeFromTrack(peerId, mediaTag) {
   }
 
   log('unsubscribe from track', peerId, mediaTag);
-
-  closeConsumer(consumer);
-
-  // ui
+  try {
+    await closeConsumer(consumer);
+  } catch (e) {
+    console.error(e);
+  }
+  // force update of ui
   updatePeersDisplay();
 }
 
 export async function pauseConsumer(consumer) {
   if (consumer) {
     log('pause consumer', consumer.appData.peerId, consumer.appData.mediaTag);
-    await sig('pause-consumer', { consumerId: consumer.id });
-    consumer.pause();
+    try {
+      await sig('pause-consumer', { consumerId: consumer.id });
+      await consumer.pause();
+    } catch (e) {
+      console.error(e);
+    }
   }
 }
 
 export async function resumeConsumer(consumer) {
   if (consumer) {
     log('resume consumer', consumer.appData.peerId, consumer.appData.mediaTag);
-    await sig('resume-consumer', { consumerId: consumer.id });
-    consumer.resume();
+    try {
+      await sig('resume-consumer', { consumerId: consumer.id });
+      await consumer.resume();
+    } catch (e) {
+      console.error(e);
+    }
   }
 }
 
 export async function pauseProducer(producer) {
   if (producer) {
     log('pause producer', producer.appData.mediaTag);
-    await sig('pause-producer', { producerId: producer.id });
-    producer.pause();
+    try {
+      await sig('pause-producer', { producerId: producer.id });
+      await producer.pause();
+    } catch (e) {
+      console.error(e);
+    }
   }
 }
 
 export async function resumeProducer(producer) {
   if (producer) {
     log('resume producer', producer.appData.mediaTag);
-    await sig('resume-producer', { producerId: producer.id });
-    producer.resume();
+    try {
+      await sig('resume-producer', { producerId: producer.id });
+      await producer.resume();
+    } catch (e) {
+      console.error(e);
+    }
   }
 }
 
@@ -441,14 +479,17 @@ async function closeConsumer(consumer) {
     return;
   }
   log('closing consumer', consumer.appData.peerId, consumer.appData.mediaTag);
+  try {
+    // tell the server we're closing this consumer. (the server-side
+    // consumer may have been closed already, but that's okay.)
+    await sig('close-consumer', { consumerId: consumer.id });
+    await consumer.close();
 
-  // tell the server we're closing this consumer. (the server-side
-  // consumer may have been closed already, but that's okay.)
-  sig('close-consumer', { consumerId: consumer.id });
-  consumer.close();
-
-  consumers = consumers.filter((c) => c !== consumer);
-  removeVideoAudio(consumer);
+    consumers = consumers.filter((c) => c !== consumer);
+    removeVideoAudio(consumer);
+  } catch (e) {
+    console.error(e);
+  }
 }
 
 // utility function to create a transport and hook up signaling logic
@@ -464,9 +505,9 @@ async function createTransport(direction) {
   log ('transport options', transportOptions);
 
   if (direction === 'recv') {
-    transport = device.createRecvTransport(transportOptions);
+    transport = await device.createRecvTransport(transportOptions);
   } else if (direction === 'send') {
-    transport = device.createSendTransport(transportOptions);
+    transport = await device.createSendTransport(transportOptions);
   } else {
     throw new Error(`bad transport 'direction': ${direction}`);
   }
