@@ -51,15 +51,16 @@ If `sslCrt`/`sslKey` are found, the server will start as an HTTPS
 rather than an HTTP server. Check the console output to confirm that
 this happened as expected.
 
-You'll also need to add an entry to the `webRtcTransport.listIps` array.
+You'll also need to add an entry to the `webRtcTransport.listIps` array
+in `config.js`.
 
 ## Running on AWS EC2 instances
 
 1. Make sure that your instance security group allows inbound TCP to
-port 3000, inbound UDP to ports 40000-49999, and all outbound traffic.
+   port 3000, inbound UDP to ports 40000-49999, and all outbound traffic.
 
 2. On AWS Linux you'll need to install a newer version of g++ than is
-included in the Development Tools package group.
+   included in the Development Tools package group.
 
 ```
 # from-scratch install on AWS Linux
@@ -76,7 +77,7 @@ npm install
 ```
 
 3. Make a `listenIps` entry with `ip` set to the instance's private IP
-address, and `announcedIp` set to the instance's public IPv4 address.
+   address, and `announcedIp` set to the instance's public IPv4 address.
 
 ## A note on signaling and code structure
 
