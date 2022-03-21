@@ -776,11 +776,11 @@ async function updatePeerStats() {
       if (!stats || !roomState.peers[peerId]) {
         continue;
       }
-      roomState.peers[peerId].stats[consumer.id] = {
+      roomState.peers[peerId].stats[consumer.id] = [{
         bitrate: stats.bitrate,
         fractionLost: stats.fractionLost,
         score: stats.score
-      }
+      }]
     } catch (e) {
       warn('error while updating consumer stats', e);
     }
