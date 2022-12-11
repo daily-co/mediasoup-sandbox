@@ -7,3 +7,5 @@ package-lock.json
 *.pem
 *.crt
 *.key
+.idea
+.vscode

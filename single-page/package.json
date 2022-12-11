@@ -17,10 +17,10 @@
     "mediasoup-client": "^3.6.21"
   },
   "devDependencies": {
-    "rollup": "^1.12.4",
-    "rollup-plugin-commonjs": "^10.0.0",
-    "rollup-plugin-json": "^4.0.0",
-    "rollup-plugin-node-builtins": "^2.1.2",
-    "rollup-plugin-node-resolve": "^5.0.0"
+    "@rollup/plugin-commonjs": "^23.0.4",
+    "@rollup/plugin-json": "^5.0.2",
+    "@rollup/plugin-node-resolve": "^15.0.1",
+    "rollup": "^3.7.0",
+    "rollup-plugin-node-builtins": "^2.1.2"
   }
 }
