@@ -7,8 +7,8 @@ module.exports = {
 
   // ssl certs. we'll start as http instead of https if we don't have
   // these
-  sslCrt: "local.crt",
-  sslKey: "local.key",
+  sslCrt: "localhost.crt",
+  sslKey: "localhost.key",
 
   mediasoup: {
     worker: {
@@ -22,10 +22,10 @@ module.exports = {
         "rtp",
         "srtp",
         "rtcp",
-        // 'rtx',
+        'rtx',
         // 'bwe',
         // 'score',
-        // 'simulcast',
+        'simulcast',
         // 'svc'
       ],
     },
@@ -37,15 +37,15 @@ module.exports = {
           clockRate: 48000,
           channels: 2,
         },
-        {
+        /*{
           kind: "video",
           mimeType: "video/VP8",
           clockRate: 90000,
           parameters: {
             //                'x-google-start-bitrate': 1000
           },
-        },
-        {
+        },*/
+        /*{
           kind: "video",
           mimeType: "video/h264",
           clockRate: 90000,
@@ -55,7 +55,7 @@ module.exports = {
             "level-asymmetry-allowed": 1,
             //						  'x-google-start-bitrate'  : 1000
           },
-        },
+        },*/
         {
           kind: "video",
           mimeType: "video/h264",
